@@ -43,8 +43,8 @@ if errorlevel 1 ( echo ERROR: 'uv' not on PATH. Install from https://docs.astral
 echo [sana-wm] Target venv: %VENV%
 
 if not exist "%VENV%\Scripts\python.exe" (
-    echo [sana-wm] Creating Python 3.10 venv ^(matches MIND^) ...
-    uv venv "%VENV%" --python 3.10
+    echo [sana-wm] Creating Python 3.10.20 venv ^(matches MIND exactly^) ...
+    uv venv "%VENV%" --python 3.10.20
     if errorlevel 1 exit /b %ERRORLEVEL%
 )
 
@@ -86,8 +86,15 @@ set FILTERED=%TEMP%\sana_wm_requirements_filtered.txt
 powershell -NoProfile -Command "(Get-Content '%~dp0requirements\sana_wm.txt') | Where-Object { $_ -notmatch '^(torch|torchvision|torchaudio|triton|xformers)' } | Set-Content -Encoding utf8 '%FILTERED%'"
 if not exist "%FILTERED%" ( echo ERROR: filtered requirements file not written: %FILTERED% & exit /b 1 )
 
-echo [sana-wm] Installing filtered requirements ...
-uv pip install --python "%PY%" -r "%FILTERED%"
+:: Override `triton` to non-win32 only, so transitive triton deps from
+:: flash-linear-attention/liger_kernel/xformers don't try to pull the
+:: Linux-only `triton` distribution. triton-windows (installed above)
+:: already provides `import triton` at runtime.
+set OVERRIDES=%TEMP%\sana_wm_overrides.txt
+> "%OVERRIDES%" echo triton; sys_platform != "win32"
+
+echo [sana-wm] Installing filtered requirements ^(with triton override^) ...
+uv pip install --python "%PY%" --override "%OVERRIDES%" -r "%FILTERED%"
 if errorlevel 1 exit /b %ERRORLEVEL%
 
 echo [sana-wm] Pi3X ^(--no-deps so torch/numpy aren't bumped^) ...
