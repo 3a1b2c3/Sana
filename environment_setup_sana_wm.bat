@@ -1,22 +1,34 @@
 @echo off
 :: -----------------------------------------------------------------------------
-:: SANA-WM environment installer for Windows (port of environment_setup_sana_wm.sh).
+:: SANA-WM environment installer for Windows.
 ::
-:: Creates a Python 3.11 venv at .venv-wm/ and installs the SANA-WM stack:
-::   torch 2.9.1+cu128, triton 3.5.1 (or triton-windows fallback), xformers
-::   0.0.33.post2, transformers 4.57.3, mmcv 1.7.2 (no-build-isolation),
-::   flash-linear-attention, liger_kernel, Pi3X, plus everything in
-::   requirements\sana_wm.txt.
+:: Aligned with MIND's venv:  Python 3.10  +  torch 2.10.0+cu128.
+:: (Upstream environment_setup_sana_wm.sh asks for 3.11 + torch 2.9.1; we
+:: deviate so the same wheels work across MIND, scope-matrix2, and SANA-WM.)
 ::
-:: We skip the conda + cuda-toolkit steps from the .sh: on Windows the cu128
-:: torch wheels ship their own CUDA libs, and source builds (mmcv, flash-attn)
-:: use MSVC + the cu128 toolchain you set up via vcvarsall.bat x64.
+:: torch is NOT installed by this script — install it into .venv-wm\ before
+:: running, e.g.:
+::   uv pip install --python .venv-wm\Scripts\python.exe --index-url https://download.pytorch.org/whl/cu128 torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0
+::
+:: Creates .venv-wm\ next to this script and installs:
+::   triton-windows (3.10+win replacement for upstream triton),
+::   xformers latest-cu128, mmcv 1.7.2 (--no-build-isolation),
+::   flash-linear-attention, liger_kernel, Pi3X (intrinsics),
+::   plus everything else in requirements\sana_wm.txt minus the torch family
+::   pins (so this script never touches torch/torchvision/torchaudio).
+::
+:: Caveat: flash-linear-attention's @triton.jit kernels may fail to import on
+:: Python 3.10 with non-Windows triton because triton 3.5's source-inspection
+:: regex assumes 3.11 semantics. triton-windows is patched separately; if
+:: imports still blow up at "AttributeError: 'NoneType' object has no
+:: attribute 'start'", bump to Python 3.11 by editing the `uv venv ... --python`
+:: line below.
 ::
 :: Usage:
-::   environment_setup_sana_wm.bat                  create .venv-wm at repo root
+::   environment_setup_sana_wm.bat                  build .venv-wm
 ::   environment_setup_sana_wm.bat D:\envs\sana-wm  custom venv path
 ::
-:: Idempotent: rerunning on an existing venv reconciles versions instead of failing.
+:: Idempotent: rerunnable on an existing venv.
 :: -----------------------------------------------------------------------------
 
 setlocal enableextensions
@@ -31,55 +43,64 @@ if errorlevel 1 ( echo ERROR: 'uv' not on PATH. Install from https://docs.astral
 echo [sana-wm] Target venv: %VENV%
 
 if not exist "%VENV%\Scripts\python.exe" (
-    echo [sana-wm] Creating venv with Python 3.11 ...
-    uv venv "%VENV%" --python 3.11
+    echo [sana-wm] Creating Python 3.10 venv ^(matches MIND^) ...
+    uv venv "%VENV%" --python 3.10
     if errorlevel 1 exit /b %ERRORLEVEL%
 )
 
 set PY=%VENV%\Scripts\python.exe
 
-echo [sana-wm] Base build tooling ^(pip, wheel, setuptools^<80^) ...
+echo [sana-wm] Verifying torch is pre-installed ^(this script does not install it^) ...
+"%PY%" -c "import torch; print(' torch', torch.__version__, 'cuda', torch.cuda.is_available())" 2>nul
+if errorlevel 1 (
+    echo ERROR: torch is not installed in %VENV%. Pre-install it first, e.g.:
+    echo   uv pip install --python "%PY%" --index-url https://download.pytorch.org/whl/cu128 torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0
+    exit /b 2
+)
+
+echo [sana-wm] Base build tooling ^(pip, wheel, setuptools^<80 for mmcv^) ...
 uv pip install --python "%PY%" -U pip wheel
 if errorlevel 1 exit /b %ERRORLEVEL%
 uv pip install --python "%PY%" "setuptools<80"
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-echo [sana-wm] Torch 2.9.1 + torchvision 0.24.1 + torchaudio 2.9.1 ^(cu128^) ...
-uv pip install --python "%PY%" --index-url https://download.pytorch.org/whl/cu128 torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1
+
+echo [sana-wm] triton-windows ^(replaces upstream triton on Windows + Py 3.10^) ...
+uv pip install --python "%PY%" "triton-windows>=3.4,<4"
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-echo [sana-wm] triton ^(prefer 3.5.1, fall back to triton-windows^) ...
-uv pip install --python "%PY%" triton==3.5.1
-if errorlevel 1 ( echo [sana-wm]   triton 3.5.1 unavailable, trying triton-windows ... & uv pip install --python "%PY%" "triton-windows>=3.5,<3.6" )
+echo [sana-wm] xformers latest-cu128 ^(version solver matches torch 2.10^) ...
+uv pip install --python "%PY%" --index-url https://download.pytorch.org/whl/cu128 xformers
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-echo [sana-wm] xformers 0.0.33.post2 ^(cu128^) ...
-uv pip install --python "%PY%" --index-url https://download.pytorch.org/whl/cu128 xformers==0.0.33.post2
-if errorlevel 1 exit /b %ERRORLEVEL%
-
-echo [sana-wm] mmcv 1.7.2 ^(--no-build-isolation; needs setuptools^<80 in the venv^) ...
+echo [sana-wm] mmcv 1.7.2 ^(--no-build-isolation; uses setuptools^<80 already in venv^) ...
 uv pip install --python "%PY%" --no-build-isolation mmcv==1.7.2
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-echo [sana-wm] Editable install of the repo ^(--no-deps^) ...
+echo [sana-wm] Editable install of the repo ^(--no-deps; we resolve manually^) ...
 uv pip install --python "%PY%" -e . --no-deps
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-echo [sana-wm] requirements\sana_wm.txt ...
-uv pip install --python "%PY%" -r requirements\sana_wm.txt
+echo [sana-wm] Filtering requirements\sana_wm.txt to drop torch/triton/xformers pins ...
+set FILTERED=%TEMP%\sana_wm_requirements_filtered.txt
+powershell -NoProfile -Command "(Get-Content '%~dp0requirements\sana_wm.txt') | Where-Object { $_ -notmatch '^(torch|torchvision|torchaudio|triton|xformers)' } | Set-Content -Encoding utf8 '%FILTERED%'"
+if not exist "%FILTERED%" ( echo ERROR: filtered requirements file not written: %FILTERED% & exit /b 1 )
+
+echo [sana-wm] Installing filtered requirements ...
+uv pip install --python "%PY%" -r "%FILTERED%"
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-echo [sana-wm] Pi3X ^(--no-deps so torch/numpy aren't overwritten^) ...
+echo [sana-wm] Pi3X ^(--no-deps so torch/numpy aren't bumped^) ...
 uv pip install --python "%PY%" --no-deps "git+https://github.com/yyfz/Pi3.git"
 if errorlevel 1 exit /b %ERRORLEVEL%
 uv pip install --python "%PY%" huggingface_hub opencv-python plyfile
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-echo [sana-wm] flash-attn ^(source build, 20-40 min; needs vcvarsall.bat x64 + cu128 nvcc on PATH^) ...
+echo [sana-wm] flash-attn ^(optional source build; needs vcvarsall.bat x64 + cu128 nvcc^) ...
 uv pip install --python "%PY%" --no-build-isolation "flash-attn>=2.7.0"
 if errorlevel 1 ( echo WARNING: flash-attn build failed. SANA-WM falls back to xformers/SDPA; continuing. )
 
 echo.
 echo [sana-wm] Done. Inference python: %PY%
-echo [sana-wm] Next: run test_sana_wm.bat
+echo [sana-wm] Next: test_sana_wm.bat
 exit /b 0
