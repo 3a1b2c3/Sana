@@ -15,7 +15,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # This file is copied from https://github.com/NVlabs/VILA/tree/main/llava/wids
-import fcntl
 import os
 import shutil
 import sys
@@ -23,6 +22,29 @@ import time
 from collections import deque
 from datetime import datetime
 from urllib.parse import urlparse
+
+if os.name == "nt":
+    import msvcrt
+
+    def _flock_ex(fileobj):
+        try:
+            msvcrt.locking(fileobj.fileno(), msvcrt.LK_LOCK, 1)
+        except OSError:
+            pass
+
+    def _flock_un(fileobj):
+        try:
+            msvcrt.locking(fileobj.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+else:
+    import fcntl
+
+    def _flock_ex(fileobj):
+        fcntl.flock(fileobj.fileno(), fcntl.LOCK_EX)
+
+    def _flock_un(fileobj):
+        fcntl.flock(fileobj.fileno(), fcntl.LOCK_UN)
 
 recent_downloads = deque(maxlen=1000)
 
@@ -41,11 +63,11 @@ class ULockFile:
 
     def __enter__(self):
         self.lockfile = open(self.lockfile_path, "w")
-        fcntl.flock(self.lockfile.fileno(), fcntl.LOCK_EX)
+        _flock_ex(self.lockfile)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        fcntl.flock(self.lockfile.fileno(), fcntl.LOCK_UN)
+        _flock_un(self.lockfile)
         self.lockfile.close()
         self.lockfile = None
         try:

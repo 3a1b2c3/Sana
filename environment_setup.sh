@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Linux / macOS setup. For Windows, use environment_setup.bat instead —
+# it applies Windows-only build constraints (mmcv pkg_resources + MMCV_WITH_OPS=0)
+# and relies on the triton-windows wheel selected via pyproject.toml platform markers.
 set -e
 
 # Check if we should skip environment setup entirely

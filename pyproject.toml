@@ -45,7 +45,8 @@ dependencies = [
     "torchaudio==2.8.0",
     "torchvision==0.23.0",
     "transformers==4.57.0",
-    "triton==3.4.0",
+    "triton==3.4.0; sys_platform != 'win32'",
+    "triton-windows==3.4.0.post20; sys_platform == 'win32'",
     "wandb",
     "webdataset",
     "xformers==0.0.32.post2",
@@ -77,6 +78,9 @@ sana-upload = "sana.cli.upload2hf:main"
 
 [tool.pip]
 extra-index-url = ["https://download.pytorch.org/whl/cu128"]
+
+[tool.uv.extra-build-dependencies]
+mmcv = ["setuptools<80", "wheel"]
 
 [tool.black]
 line-length = 120

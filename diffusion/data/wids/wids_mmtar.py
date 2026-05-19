@@ -16,11 +16,17 @@
 
 # This file is copied from https://github.com/NVlabs/VILA/tree/main/llava/wids
 import collections
-import fcntl
 import io
 import mmap
 import os
 import struct
+
+# fcntl is Unix-only. Windows has no equivalent shared/non-blocking advisory
+# file lock in stdlib (msvcrt.locking only supports exclusive blocking/non-
+# blocking byte-range locks). Sana inference on Windows is single-process so
+# the reader-count gate below is decorative; skip locking and just unlink.
+if os.name != "nt":
+    import fcntl
 
 TarHeader = collections.namedtuple(
     "TarHeader",
@@ -153,8 +159,18 @@ def keep_while_reading(fname, fd, phase, delay=0.0):
     if fd < 0 or fname is None:
         return
     if phase == "start":
-        fcntl.flock(fd, fcntl.LOCK_SH)
+        if os.name != "nt":
+            fcntl.flock(fd, fcntl.LOCK_SH)
     elif phase == "end":
+        if os.name == "nt":
+            try:
+                os.unlink(fname)
+            except FileNotFoundError:
+                pass
+            except PermissionError:
+                # File still open by this or another reader; leave it.
+                pass
+            return
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             os.unlink(fname)
