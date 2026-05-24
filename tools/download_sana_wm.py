@@ -1,3 +1,12 @@
+"""Download SANA-WM_bidirectional from HuggingFace.
+
+Defaults max_workers=1 to dodge the Windows + Python 3.10/3.12 thread-pool
+shutdown race in ``snapshot_download`` (``concurrent.futures.thread.shutdown
+-> t.join -> RuntimeError: cannot join thread before it is started`` on ^C,
+or hang-then-crash mid-download). Pass --workers N to opt back into parallel
+fetch on Linux / when you know your stack tolerates it.
+"""
+
 import argparse
 import os
 import sys
@@ -15,11 +24,18 @@ def main() -> int:
     p.add_argument("--revision", default="main")
     p.add_argument("--include", nargs="+", help="glob patterns to include (e.g. 'dit/*' 'vae/*')")
     p.add_argument("--exclude", nargs="+", help="glob patterns to exclude (e.g. 'refiner/text_encoder/*')")
+    p.add_argument("--workers", type=int, default=1,
+                   help="snapshot_download max_workers (default 1 = serial; "
+                        "raise for parallel fetch when not on Windows/py3.12).")
     args = p.parse_args()
 
     args.dest.mkdir(parents=True, exist_ok=True)
 
-    kwargs = {"repo_id": REPO, "local_dir": str(args.dest)}
+    kwargs = {
+        "repo_id": REPO,
+        "local_dir": str(args.dest),
+        "max_workers": args.workers,
+    }
     if args.revision != "main":
         kwargs["revision"] = args.revision
     if args.include:
