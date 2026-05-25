@@ -73,7 +73,11 @@ goto parse_args
 if not exist "%ENTRY%"       ( echo ERROR: inference entry not found: %ENTRY% & exit /b 2 )
 if not exist "%MODEL_ROOT%"  ( echo ERROR: SANA-WM model dir not found: %MODEL_ROOT% & exit /b 2 )
 if not exist "%MODEL_ROOT%\dit\sana_wm_1600m_720p.safetensors" ( echo ERROR: DiT weights missing & exit /b 2 )
-if not exist "%MODEL_ROOT%\refiner\refiner.safetensors" ( echo ERROR: refiner weights missing & exit /b 2 )
+:: Refiner pre-check skipped: the python call below passes --no_refiner, so
+:: the single-file refiner.safetensors path isn't actually loaded. What's on
+:: disk is the HF sharded layout (refiner/connectors/ + refiner/text_encoder/),
+:: which the inference script ignores under --no_refiner. Re-enable this
+:: check if you ever drop --no_refiner from the python command.
 
 echo ============================================================
 echo SANA-WM CLI smoke test  ^| demos: %DEMOS%
