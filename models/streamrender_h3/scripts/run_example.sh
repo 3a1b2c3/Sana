@@ -19,6 +19,14 @@ if [ ! -x "$PY" ]; then
     exit 1
 fi
 
+# launch_local.sh (called below) runs `npm`. setup_env.sh installs a local
+# Node under .tools/node (no sudo/apt -- common on shared DGX hosts with no
+# root access) rather than relying on a system Node; put it on PATH so
+# launch_local.sh's npm calls resolve.
+if [ -x "$HERE/.tools/node/bin/node" ]; then
+    export PATH="$HERE/.tools/node/bin:$PATH"
+fi
+
 ASSETS="configs/example.local.json"
 EXAMPLE="B10_e-track-3_bluehour"
 GPUS="${GPUS:-8}"

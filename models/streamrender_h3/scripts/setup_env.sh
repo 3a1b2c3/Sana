@@ -118,10 +118,28 @@ uv pip install --python "$PY" --no-build-isolation --no-cache \
 
 echo
 echo "=========================================="
-echo "Installing Node 22 dependencies (frontend)"
+echo "Installing Node 22 (local, no sudo/apt -- common on shared DGX hosts"
+echo "with no root access) and frontend dependencies"
 echo "=========================================="
+NODE_DIR="$HERE/.tools/node"
+if [ ! -x "$NODE_DIR/bin/node" ]; then
+    NODE_ARCH="$(uname -m)"
+    case "$NODE_ARCH" in
+        x86_64) NODE_ARCH=x64 ;;
+        aarch64) NODE_ARCH=arm64 ;;
+        *) echo "Unsupported arch for the Node binary download: $NODE_ARCH" >&2; exit 1 ;;
+    esac
+    mkdir -p "$HERE/.tools"
+    curl -fL "https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz
+    tar -xJf /tmp/node.tar.xz -C "$HERE/.tools"
+    mv "$HERE/.tools/node-v22.20.0-linux-${NODE_ARCH}" "$NODE_DIR"
+    rm -f /tmp/node.tar.xz
+fi
+export PATH="$NODE_DIR/bin:$PATH"
 node --version
 npm --prefix coding/threejs-racing ci
+echo "NOTE: scripts that call npm (launch_local.sh) need \"$NODE_DIR/bin\" on"
+echo "      PATH too -- run_example.sh and launch_local.sh already add it."
 
 echo
 echo "Done. Venv: $HERE/$VENV_DIR"
