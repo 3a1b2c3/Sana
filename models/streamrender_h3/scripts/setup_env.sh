@@ -28,13 +28,22 @@ echo "=========================================="
 echo "StreamRender-H3: creating venv ($VENV_DIR, Python 3.11)"
 echo "=========================================="
 uv venv --python 3.11 "$VENV_DIR"
-PY="$VENV_DIR/bin/python"
+# Absolute, so it still resolves correctly after the magi-attention build
+# step below cd's into its own clone directory.
+case "$VENV_DIR" in
+    /*) VENV_ABS="$VENV_DIR" ;;
+    *) VENV_ABS="$HERE/$VENV_DIR" ;;
+esac
+PY="$VENV_ABS/bin/python"
 
 echo
 echo "=========================================="
-echo "Installing torch 2.9.1+cu128 (pinned to match environment-tested.json)"
+echo "Installing torch (environment-tested.json pins 2.9.1+cu128; this repo"
+echo "has since moved to 2.14.1+cu130 manually -- no CUDA extension (magi-"
+echo "attention, flash-attn) had been built against either yet when that"
+echo "changed, so this is the new baseline, not a regression)"
 echo "=========================================="
-uv pip install --python "$PY" torch==2.9.1+cu128 --index-url https://download.pytorch.org/whl/cu128
+uv pip install --python "$PY" torch==2.14.1+cu130 --index-url https://download.pytorch.org/whl/cu130
 
 echo
 echo "=========================================="
@@ -56,9 +65,32 @@ uv pip install --python "$PY" nvidia-cutlass-dsl==4.6.2
 
 echo
 echo "=========================================="
-echo "Installing magi-attention 1.1.1"
+echo "Building magi-attention 1.1.1 from source"
 echo "=========================================="
-uv pip install --python "$PY" magi-attention==1.1.1
+# Not on PyPI -- SandAI-org/MagiAttention is installed from its own source
+# tree (https://sandai-org.github.io/MagiAttention/docs/main/user_guide/install.html).
+# Supports only Hopper and Blackwell (not Ampere). Needs CUDA 13+ in the
+# active toolchain (nvcc --version); set MAGI_ATTENTION_ALLOW_BUILD_WITH_CUDA12=1
+# to force CUDA 12 at a likely performance cost. First build is ~10-20 min
+# and uses most of the CPU.
+MAGI_BUILD_DIR="${MAGI_BUILD_DIR:-$HERE/.build/MagiAttention}"
+if [ ! -d "$MAGI_BUILD_DIR" ]; then
+    git clone https://github.com/SandAI-org/MagiAttention.git "$MAGI_BUILD_DIR"
+fi
+(
+    cd "$MAGI_BUILD_DIR"
+    git fetch --tags
+    git checkout v1.1.1
+    git submodule update --init --recursive
+    uv pip install --python "$PY" -r requirements.txt
+    # Blackwell-specific build flags (GB200/GB300-class); use the Hopper
+    # one-liner `pip install --no-build-isolation .` instead on Hopper GPUs.
+    export MAGI_ATTENTION_PREBUILD_FFA=0
+    uv pip install --python "$PY" --no-build-isolation .
+    export MAGI_ATTENTION_FA4_BACKEND=1
+)
+echo "NOTE: MAGI_ATTENTION_FA4_BACKEND=1 must also be set in the shell that"
+echo "      *runs* StreamRender-H3, not just during this install."
 
 echo
 echo "=========================================="
