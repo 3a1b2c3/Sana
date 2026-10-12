@@ -24,10 +24,6 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "=========================================="
-echo "StreamRender-H3: creating venv ($VENV_DIR, Python 3.11)"
-echo "=========================================="
-uv venv --python 3.11 "$VENV_DIR"
 # Absolute, so it still resolves correctly after the magi-attention build
 # step below cd's into its own clone directory.
 case "$VENV_DIR" in
@@ -35,6 +31,17 @@ case "$VENV_DIR" in
     *) VENV_ABS="$HERE/$VENV_DIR" ;;
 esac
 PY="$VENV_ABS/bin/python"
+
+echo "=========================================="
+echo "StreamRender-H3: venv ($VENV_DIR, Python 3.11)"
+echo "=========================================="
+if [ -x "$PY" ]; then
+    echo "Already exists at $VENV_ABS -- reusing (uv venv would wipe it and"
+    echo "lose everything already built, e.g. magi-attention/flash-attn)."
+    echo "Delete $VENV_ABS yourself first if you actually want a clean venv."
+else
+    uv venv --python 3.11 "$VENV_DIR"
+fi
 
 echo
 echo "=========================================="
@@ -62,6 +69,13 @@ echo "=========================================="
 echo "Installing nvidia-cutlass-dsl 4.6.2"
 echo "=========================================="
 uv pip install --python "$PY" nvidia-cutlass-dsl==4.6.2
+
+echo
+echo "=========================================="
+echo "Installing ninja (required: magi_attn_comm uses dlink=True device-code"
+echo "linking, which torch's cpp_extension build hard-requires ninja for)"
+echo "=========================================="
+uv pip install --python "$PY" ninja
 
 echo
 echo "=========================================="
