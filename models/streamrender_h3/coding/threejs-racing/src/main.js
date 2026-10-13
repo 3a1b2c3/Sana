@@ -1,5 +1,6 @@
 import * as T from 'three';
 import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {CarAvatar} from './car.js';
 import {makeWorld} from './native-world.js';
 import {loadNative} from './native-assets.js';
@@ -11,6 +12,16 @@ scene.add(new T.HemisphereLight(0xe2e7ed,0x606655,2.0));const sun=new T.Directio
 const renderer=new T.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setPixelRatio(1);renderer.setSize(W,H,false);renderer.toneMapping=T.ACESFilmicToneMapping;renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFSoftShadowMap;document.querySelector('#rgb').append(renderer.domElement);
 const pmrem=new T.PMREMGenerator(renderer);const room=new RoomEnvironment();scene.environment=pmrem.fromScene(room,.04).texture;scene.environmentIntensity=.28;room.dispose();pmrem.dispose();
 const camera=new T.PerspectiveCamera(40,W/H,.1,2000),world=await makeWorld(scene);
+// Opt-in free-look camera (?freecam=1), mouse-drag to orbit/zoom -- replaces
+// the fixed chase cam entirely rather than fighting it every frame.
+const freecam=new URLSearchParams(location.search).get("freecam")==="1";
+const orbitControls=freecam?new OrbitControls(camera,renderer.domElement):null;
+if(orbitControls){
+ orbitControls.enableDamping=true;orbitControls.dampingFactor=.08;
+ orbitControls.target.set(world.spawn.x,1,world.spawn.z);
+ camera.position.set(world.spawn.x,20,world.spawn.z+25);
+ orbitControls.update();
+}
 const host={add:o=>scene.add(o),remove:o=>scene.remove(o)};
 const profile={color:0x183868,bodyLength:4.6,bodyWidth:2.08,rideHeight:.36,maxSpeed:36,reverseSpeed:8,acceleration:12,brake:26,drag:1.2,turnRate:2,grip:.88};
 const player=new CarAvatar({host,world,profile});player.object.userData.semantic='hero_car';
@@ -63,6 +74,7 @@ function updateOpponents(dt=0){
  });
 }
 function updateCamera(snap=false,dt=1/FPS){
+ if(freecam)return; // orbitControls owns the camera instead
  // Finite yaw response and a road-centred gaze produce turn-dependent framing.
  // No sinusoidal shake and no copied screen-space trajectory.
  if(snap)chaseHeading=player.heading;
@@ -97,7 +109,7 @@ function step(dt){
   time+=dt;updateOpponents(dt);updateCamera(false,dt);
   lastControls={throttle:Math.max(0,throttle),brake:throttle<0?1:0,reverse:throttle<0&&player.speed<0,steering:steer,handbrake:player.handbrake,autopilot:auto,policyId:autopilotPolicy.id,targetSpeed:autopilotPolicy.targetSpeed,targetLaneOffset:autopilotPolicy.laneOffset,position:player.object.position.toArray(),heading:player.heading,speed:player.speed,trackLateral:near.lateral,cameraPosition:camera.position.toArray(),cameraFov:camera.fov,opponentGaps:opponentStates.map(s=>s.distance-trackDistance(player.motion.position))};
 }
-function render(){world.updateTrees(camera);sun.position.copy(player.object.position).add(new T.Vector3(-30,55,20));sun.target.position.copy(player.object.position);renderer.render(scene,camera);semantic.render();document.querySelector('#speed').textContent=`${Math.abs(player.speed*3.6).toFixed(0)} km/h · ${lap} 圈`;}
+function render(){if(orbitControls)orbitControls.update();world.updateTrees(camera);sun.position.copy(player.object.position).add(new T.Vector3(-30,55,20));sun.target.position.copy(player.object.position);renderer.render(scene,camera);semantic.render();document.querySelector('#speed').textContent=`${Math.abs(player.speed*3.6).toFixed(0)} km/h · ${lap} 圈`;}
 async function api(path,body,headers={}){const r=await fetch('/api/'+path,{method:'POST',body,headers});if(!r.ok)throw Error(await r.text());return r.json();}
 async function startSession(kind,frames){const config={kind,frames,width:W,height:H,fps:FPS,palette,autopilot:auto,autopilotPolicy:{...autopilotPolicy,opponentGaps:[...autopilotPolicy.opponentGaps]}};if(kind==='live'){return (await import('./runtime-client.js')).startRuntime(config);}return api('session',JSON.stringify(config),{'Content-Type':'application/json'});}
 async function sendFrame(index){const blob=await semantic.png();const controls={...lastControls,frame:index,timestamp:index/FPS};if(session.runtime){return (await import('./runtime-client.js')).sendRuntimeFrame(session,index,blob,controls);}return api(`frame/${session.id}/${index}`,blob,{'Content-Type':'image/png','X-Controls':JSON.stringify(controls)});}
