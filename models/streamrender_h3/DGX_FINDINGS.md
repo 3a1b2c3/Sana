@@ -158,11 +158,35 @@ through the render.
   `output.height`/`output.width` says (1344×768 here), so any image matching that aspect ratio
   (1.75:1) works without pre-resizing; verified with `PIL.Image.verify()` before wiring it in.
 - Added optional 3D traffic-cone objects to the TORCS live-driving scene itself (not just prompt
-  text) in `coding/threejs-racing/src/world.js`: a new `cone` semantic class in `public/palette.json`
-  (required — `SemanticView.render()` throws `Unknown semantic` for any object whose label isn't in
-  the palette), geometry placed just ahead of the spawn point along the track curve's samples. Gated
-  behind `?cones=1` in the URL (off by default) so it doesn't change the existing scene/prompt
-  pairing unless explicitly requested.
+  text), gated behind `?cones=1` in the URL (off by default). Labeled `'barrier'`, not a new
+  semantic class — reusing an existing class the H3 model was actually trained on (also orange in
+  `public/palette.json`) keeps the segmentation input in-distribution; a genuinely new class would
+  throw `Unknown semantic` from `SemanticView.render()` unless also added to the palette, and even
+  then the model has never seen it in training.
+  - **Wasted a long debugging stretch editing the wrong file.** `coding/threejs-racing/src/world.js`
+    exists on disk and *looks* like the track/world builder (same `makeWorld()` export shape,
+    curve-sample-based layout), but `main.js` actually imports from `./native-world.js` — a
+    completely different file that loads the real TORCS track mesh via `loadNative('track')` plus a
+    raycast-based `heightAt()`. Every edit to `world.js` (cone geometry, then a `console.log`, then
+    a `console.warn` after suspecting a Chrome log-level filter) synced correctly and was even
+    confirmed being served by the vite dev server (`curl .../src/world.js | grep ...` showed the new
+    code) — but none of it ever ran, since nothing imports that file. The tell that should have
+    caught this sooner: the car's yellow recolor (added to `main.js` directly) worked immediately,
+    while the cones (added only to `world.js`) never did, despite both being synced the same way.
+    Should have diffed `grep -rn makeWorld src/*.js` against the import in `main.js` at the very
+    first sign of "code confirmed served but not executing," rather than escalating through
+    cache-busting and console-filter theories first. Fix: ported the same cone logic into
+    `native-world.js` (adapted to its `heightAt()`/`direction` variables instead of `world.js`'s
+    `groundHeightAt()`/`samples`), confirmed via the same `curl | grep` check against the file that's
+    actually imported this time.
+- Also added an opt-in flat yellow recolor for the player's car in the live 3D scene (`?carColor=
+  yellow`, `main.js`). The visible paint is baked into a texture image (`car1-stock1.rgb`), not a
+  settable material parameter — `native-assets.js`'s `loadNative()` builds one `MeshStandardMaterial`
+  per distinct texture file the model references (`car1-stock1.rgb` = body+glass, `carbon-128.rgb` =
+  trim, `driver.rgb`, `grill.rgb`), so recoloring only the body meant tagging each mesh with its
+  source texture name (`mesh.userData.sourceTexture`) in `native-assets.js` and filtering on that in
+  `main.js`, rather than a blanket "strip every material's texture map" pass (which would have also
+  flattened the driver figure and grille to solid yellow).
 
 ## Runtime gotcha: one session per worker process
 

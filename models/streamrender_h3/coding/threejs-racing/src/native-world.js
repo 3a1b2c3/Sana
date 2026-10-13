@@ -12,19 +12,27 @@ export async function makeWorld(scene){
  // A traffic cone just ahead of the spawn point, opt-in via ?cones=1. Labeled
  // 'barrier' (not a new semantic class) so it stays in the H3 model's known
  // segmentation vocabulary -- orange in the palette either way.
- console.warn('[cones] native-world cones param:',JSON.stringify(new URLSearchParams(location.search).get("cones")));
- if(new URLSearchParams(location.search).get("cones")==="1"){
+ // ?cones=<N> places N cones down the middle of the road, spaced out, starting
+ // well down the road from spawn; omitted or 0 means none.
+ const coneCount=Number(new URLSearchParams(location.search).get("cones")||0);
+ console.warn('[cones] count',coneCount);
+ if(coneCount>0){
   const forward=new T.Vector3(direction.x,0,direction.z).normalize();
-  const base=start.clone().addScaledVector(forward,8);
-  base.y=heightAt(base.x,base.z);
-  console.warn('[cones] placing at',base.x,base.y,base.z);
-  const bodyHeight=1.4;
-  const cone=new T.Mesh(new T.ConeGeometry(.5,bodyHeight,12),new T.MeshStandardMaterial({color:0xff6a13,roughness:.86}));
-  cone.position.set(base.x,base.y+bodyHeight/2,base.z);cone.userData.semantic='barrier';cone.castShadow=true;cone.receiveShadow=true;
-  scene.add(cone);
-  const band=new T.Mesh(new T.CylinderGeometry(.4,.44,.2,12),new T.MeshStandardMaterial({color:0xf2f2f2,roughness:.86}));
-  band.position.set(base.x,base.y+bodyHeight*.62,base.z);band.userData.semantic='barrier';band.receiveShadow=true;
-  scene.add(band);
+  const bodyHeight=.7;
+  Array.from({length:coneCount},(_,i)=>i).forEach(i=>{
+   const base=start.clone().addScaledVector(forward,25+i*2);
+   base.y=heightAt(base.x,base.z);
+   const plateHeight=.05;
+   const plate=new T.Mesh(new T.BoxGeometry(.4,plateHeight,.4),new T.MeshStandardMaterial({color:0xff6a13,roughness:.86}));
+   plate.position.set(base.x,base.y+plateHeight/2,base.z);plate.userData.semantic='barrier';plate.castShadow=true;plate.receiveShadow=true;
+   scene.add(plate);
+   const cone=new T.Mesh(new T.ConeGeometry(.25,bodyHeight,12),new T.MeshStandardMaterial({color:0xff6a13,roughness:.86}));
+   cone.position.set(base.x,base.y+plateHeight+bodyHeight/2,base.z);cone.userData.semantic='barrier';cone.castShadow=true;cone.receiveShadow=true;
+   scene.add(cone);
+   const band=new T.Mesh(new T.CylinderGeometry(.12,.135,.05,12),new T.MeshStandardMaterial({color:0xf2f2f2,roughness:.86}));
+   band.position.set(base.x,base.y+plateHeight+bodyHeight*.62,base.z);band.userData.semantic='barrier';band.receiveShadow=true;
+   scene.add(band);
+  });
  }
  return{roadHalfWidth:6,curve,length,samples,nearest,updateTrees:()=>{},heightAt,bounds:{radius:2000},startDistance,spawn:{x:start.x,z:start.z,heading:Math.atan2(-direction.x,-direction.z)}};
 }
