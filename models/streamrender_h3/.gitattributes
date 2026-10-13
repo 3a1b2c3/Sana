@@ -1,0 +1,4 @@
+# Force LF for shell scripts regardless of local git autocrlf config --
+# these only ever run on Linux (DGX), and CRLF breaks bash with cryptic
+# errors like "set: pipefail: invalid option name".
+*.sh text eol=lf
