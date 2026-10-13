@@ -127,8 +127,58 @@ if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ]; then
     export TORCH_CUDA_ARCH_LIST="${DETECTED_ARCH}+PTX"
     echo "Detected compute_cap=$DETECTED_ARCH -> TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST"
 fi
-uv pip install --python "$PY" --no-build-isolation --no-cache \
-    "git+https://github.com/Dao-AILab/flash-attention.git@0251105a2fb1"
+# Built from a local clone, not `uv pip install git+...` directly -- the
+# latter builds in an ephemeral temp dir, and this pinned commit's setup.py
+# pins the FA2 extension's nvcc AND host cxx flags to -std=c++17 (lines
+# ~314/333), which fails identically to the magi-attention C++20 issue above
+# against torch 2.14's headers (same char8_t/requires-requires errors). A
+# temp-dir build can't be patched, so clone+patch+install from a path instead.
+FA_BUILD_DIR="${FA_BUILD_DIR:-$HERE/.build/flash-attention}"
+if [ ! -d "$FA_BUILD_DIR" ]; then
+    git clone https://github.com/Dao-AILab/flash-attention.git "$FA_BUILD_DIR"
+fi
+(
+    cd "$FA_BUILD_DIR"
+    git checkout 0251105a2fb1
+    git submodule update --init --recursive
+    sed -i 's/"-std=c++17",/"-std=c++20",/; s/compiler_c17_flag=\["-O3", "-std=c++17"\]/compiler_c17_flag=["-O3", "-std=c++20"]/' setup.py
+)
+uv pip install --python "$PY" --no-build-isolation --no-cache "$FA_BUILD_DIR"
+
+# This build has silently no-op'd before (e.g. a wrapping `uv pip install`
+# in a non-interactive shell where `uv` wasn't actually on PATH, so the
+# whole command was a no-op that still exited 0) -- caught 2000+ lines into
+# a model run instead of here. Fail loudly, immediately, right after the
+# build that's supposed to produce it.
+"$PY" -c "import flash_attn" || {
+    echo "flash_attn failed to import after the build above -- it did not" >&2
+    echo "actually install. Re-run this step." >&2
+    exit 1
+}
+
+echo
+echo "=========================================="
+echo "Installing flash-attn-4 (FA4 CuTe DSL backend)"
+echo "=========================================="
+# flash_attn.cute (imported as `from flash_attn.cute.interface import ...`)
+# is a SEPARATE PyPI package, not part of the flash-attn build above --
+# upstream's own setup.py explicitly excludes flash_attn.cute/flash_attn.cute.*
+# from that build (see flash_attn/cute/README.md in the source tree). Pure
+# Python + CuTe DSL (JIT-compiled at runtime via nvidia-cutlass-dsl), so this
+# is a normal wheel install, not a source build.
+uv pip install --python "$PY" "flash-attn-4[cu13]"
+
+# magi_attention unconditionally imports debugpy in utils/debug.py (an
+# attach-a-debugger helper, not something actually used at runtime here) but
+# never declares it as a dependency -- breaks on first `import magi_attention`
+# otherwise.
+uv pip install --python "$PY" debugpy
+
+"$PY" -c "from flash_attn.cute.interface import flash_attn_varlen_func; import magi_attention" || {
+    echo "flash_attn.cute or magi_attention failed to import after the installs" >&2
+    echo "above. Re-run this step." >&2
+    exit 1
+}
 
 echo
 echo "=========================================="

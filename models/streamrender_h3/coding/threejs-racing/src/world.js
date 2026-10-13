@@ -41,5 +41,20 @@ export function makeWorld(scene){
   const updateTrees=addTorcsTrees(scene,samples,groundHeightAt);
   function nearest(position){let best=samples[0],dist=Infinity,index=0;for(let i=0;i<800;i++){const d=(position.x-samples[i].point.x)**2+(position.z-samples[i].point.z)**2;if(d<dist){dist=d;best=samples[i];index=i}}return{...best,index,distance:Math.sqrt(dist),lateral:position.clone().sub(best.point).dot(best.normal)}}
   const startFraction=Number(new URLSearchParams(location.search).get("startFraction")||.14),startDistance=startFraction*length,start=curve.getPointAt(startFraction),direction=curve.getTangentAt(startFraction);
+  // A short line of orange-and-white traffic cones just ahead of the spawn point,
+  // narrowing the lane on one side (matches the H3 prompt's cone description).
+  // Opt-in via ?cones=1 (off by default -- doesn't affect the existing scene/prompt
+  // pairing unless explicitly requested).
+  if(new URLSearchParams(location.search).get("cones")==="1"){
+    // Placed relative to the car's own spawn position/heading, not a curve
+    // sample index -- simpler and avoids any track-direction guesswork.
+    const forward=new T.Vector3(direction.x,0,direction.z).normalize();
+    const base=start.clone().addScaledVector(forward,8);
+    base.y=groundHeightAt(base.x,base.z);
+    console.log('[cones] spawn',start,'forward',forward,'cone at',base);
+    const bodyHeight=1.4;
+    mesh(new T.ConeGeometry(.5,bodyHeight,12),0xff6a13,'cone',[base.x,base.y+bodyHeight/2,base.z]);
+    mesh(new T.CylinderGeometry(.4,.44,.2,12),0xf2f2f2,'cone',[base.x,base.y+bodyHeight*.62,base.z]);
+  }
   return{roadHalfWidth,curve,length,samples,nearest,updateTrees,heightAt:(x,z)=>{const n=nearest(new T.Vector3(x,0,z));const along=((x-n.point.x)*n.tangent.x+(z-n.point.z)*n.tangent.z)/(n.tangent.x**2+n.tangent.z**2);return n.point.y+along*n.tangent.y+.025;},bounds:{radius:1800},startDistance,spawn:{x:start.x,z:start.z,heading:Math.atan2(-direction.x,-direction.z)}};
 }
