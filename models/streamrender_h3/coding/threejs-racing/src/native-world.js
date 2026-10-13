@@ -17,10 +17,12 @@ export async function makeWorld(scene){
  const coneCount=Number(new URLSearchParams(location.search).get("cones")||0);
  console.warn('[cones] count',coneCount);
  if(coneCount>0){
-  const forward=new T.Vector3(direction.x,0,direction.z).normalize();
+  // Follow the actual curve (arc-length offset from spawn), not a straight
+  // line projected from the spawn tangent -- a straight line drifts off the
+  // road as soon as the track bends.
   const bodyHeight=.7;
   Array.from({length:coneCount},(_,i)=>i).forEach(i=>{
-   const base=start.clone().addScaledVector(forward,25+i*2);
+   const t=((startDistance+25+i*2)%length)/length,base=curve.getPointAt(t);
    base.y=heightAt(base.x,base.z);
    const plateHeight=.05;
    const plate=new T.Mesh(new T.BoxGeometry(.4,plateHeight,.4),new T.MeshStandardMaterial({color:0xff6a13,roughness:.86}));
