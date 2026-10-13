@@ -9,7 +9,7 @@ export async function loadNative(kind,{semanticOverride=null}={}){
  await Promise.all([...batches.values()].map(async b=>{
   const map=await texture(kind,b.texture),geometry=new T.BufferGeometry();geometry.setAttribute('position',new T.Float32BufferAttribute(b.positions,3));geometry.setAttribute('uv',new T.Float32BufferAttribute(b.uv,2));geometry.computeVertexNormals();
   const alpha=true;
-  const material=new T.MeshStandardMaterial({map,roughness:.9,side:T.DoubleSide,alphaTest:alpha?.5:0});const mesh=new T.Mesh(geometry,material);mesh.userData.semantic=b.label;mesh.castShadow=kind==='car';mesh.receiveShadow=true;
+  const material=new T.MeshStandardMaterial({map,roughness:.9,side:T.DoubleSide,alphaTest:alpha?.5:0});const mesh=new T.Mesh(geometry,material);mesh.userData.semantic=b.label;mesh.userData.sourceTexture=b.texture;mesh.castShadow=kind==='car';mesh.receiveShadow=true;
   if(alpha)mesh.userData.semanticMaterial=new T.ShaderMaterial({uniforms:{rgb:{value:new T.Vector3(...palette[b.label].map(v=>v/255))},alphaTexture:{value:map}},vertexShader:'varying vec2 tuv; void main(){tuv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}',fragmentShader:'varying vec2 tuv;uniform sampler2D alphaTexture;uniform vec3 rgb;void main(){if(texture2D(alphaTexture,tuv).a<0.5)discard;gl_FragColor=vec4(rgb,1.0);}',side:T.DoubleSide,blending:T.NoBlending,toneMapped:false});
   group.add(mesh);
  }));return group;

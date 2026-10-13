@@ -45,16 +45,21 @@ export function makeWorld(scene){
   // narrowing the lane on one side (matches the H3 prompt's cone description).
   // Opt-in via ?cones=1 (off by default -- doesn't affect the existing scene/prompt
   // pairing unless explicitly requested).
+  console.warn('[cones] query param value:',JSON.stringify(new URLSearchParams(location.search).get("cones")));
   if(new URLSearchParams(location.search).get("cones")==="1"){
     // Placed relative to the car's own spawn position/heading, not a curve
     // sample index -- simpler and avoids any track-direction guesswork.
     const forward=new T.Vector3(direction.x,0,direction.z).normalize();
     const base=start.clone().addScaledVector(forward,8);
     base.y=groundHeightAt(base.x,base.z);
-    console.log('[cones] spawn',start,'forward',forward,'cone at',base);
+    console.warn('[cones] spawn',start.x,start.y,start.z,'forward',forward.x,forward.y,forward.z,'cone at',base.x,base.y,base.z);
     const bodyHeight=1.4;
-    mesh(new T.ConeGeometry(.5,bodyHeight,12),0xff6a13,'cone',[base.x,base.y+bodyHeight/2,base.z]);
-    mesh(new T.CylinderGeometry(.4,.44,.2,12),0xf2f2f2,'cone',[base.x,base.y+bodyHeight*.62,base.z]);
+    // Labeled 'barrier', not a new 'cone' class -- the H3 model was only
+    // trained on the existing semantic vocabulary (road/barrier/grass/etc.),
+    // so reusing 'barrier' (also orange in the palette) keeps the segmentation
+    // input in-distribution instead of feeding it an unrecognized class.
+    mesh(new T.ConeGeometry(.5,bodyHeight,12),0xff6a13,'barrier',[base.x,base.y+bodyHeight/2,base.z]);
+    mesh(new T.CylinderGeometry(.4,.44,.2,12),0xf2f2f2,'barrier',[base.x,base.y+bodyHeight*.62,base.z]);
   }
   return{roadHalfWidth,curve,length,samples,nearest,updateTrees,heightAt:(x,z)=>{const n=nearest(new T.Vector3(x,0,z));const along=((x-n.point.x)*n.tangent.x+(z-n.point.z)*n.tangent.z)/(n.tangent.x**2+n.tangent.z**2);return n.point.y+along*n.tangent.y+.025;},bounds:{radius:1800},startDistance,spawn:{x:start.x,z:start.z,heading:Math.atan2(-direction.x,-direction.z)}};
 }

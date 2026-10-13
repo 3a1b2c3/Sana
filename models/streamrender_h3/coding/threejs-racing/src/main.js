@@ -16,10 +16,19 @@ const profile={color:0x183868,bodyLength:4.6,bodyWidth:2.08,rideHeight:.36,maxSp
 const player=new CarAvatar({host,world,profile});player.object.userData.semantic='hero_car';
 const opponents=[0x20c9df,0xe7c534].map(color=>{const car=new CarAvatar({host,world,profile:{...profile,color}});car.object.userData.semantic='opponent_car';return car;});
 // Native TORCS geometry uses +X forward; avatar physics uses -Z forward.
+const carColor=new URLSearchParams(location.search).get("carColor");
 for(const [i,avatar] of [player,...opponents].entries()){
  avatar.body.visible=false;
  const native=await loadNative('car',{semanticOverride:i===0?'hero_car':'opponent_car'});
  native.rotation.y=Math.PI/2;avatar.object.add(native);
+ // Optional flat recolor (?carColor=yellow) -- the visible paint is baked into
+ // the car1-stock1.rgb texture specifically (carbon-128/driver/grill are
+ // separate textures for trim/driver/grille), so only that batch's mesh gets
+ // its map stripped and replaced with a flat color; everything else keeps its
+ // normal texture.
+ if(i===0&&carColor){
+  native.traverse(o=>{if(o.isMesh&&o.userData.sourceTexture==='car1-stock1.rgb'){o.material=o.material.clone();o.material.map=null;o.material.color.set(carColor);}});
+ }
 }
 const semantic=new SemanticView(scene,camera,palette,W,H);document.querySelector('#semantic').append(semantic.canvas);
 const keys=new Set();let auto=false,busy=false,live=false,time=0,lap=0,lastIndex=0,liveIndex=0,lastControls={},session=null,livePending=Promise.resolve();
