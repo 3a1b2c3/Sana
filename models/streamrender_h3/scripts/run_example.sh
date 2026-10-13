@@ -29,7 +29,7 @@ fi
 
 ASSETS="configs/example.local.json"
 EXAMPLE="B10_e-track-3_bluehour"
-GPUS="${GPUS:-8}"
+GPUS="${GPUS:-1}"
 EXTRA_REPLAY_ARGS=()
 
 while [ "$#" -gt 0 ]; do
