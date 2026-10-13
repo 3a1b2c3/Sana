@@ -27,6 +27,58 @@ approximately 30 seconds.
 - `src/main.js`: driving, camera control, opponent vehicles, and per-frame
   export.
 
+## URL flags
+
+All are opt-in and off by default, read once at page load. Reload to change
+them; there is no live toggle.
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `?cones=<N>` | `0` | Places N traffic cones spaced down the middle of the road, starting 25 m past spawn and following the curve by arc length. |
+| `?buildings=<N>` | `0` | Places N blocks along the roadside, alternating sides at 20–30 m lateral offset, spaced 14 m apart, 14–46 m tall, rotated to face the road. |
+| `?carColor=<css-color>` | unset | Flat recolor of the player car body only. |
+| `?freecam=1` | off | Replaces the chase camera with mouse-drag orbit controls. |
+
+Combine with `&`: `http://127.0.0.1:5191/?cones=80&buildings=10`
+
+Each object flag logs its parsed count on load — `[cones] count 80`,
+`[buildings] count 10`. If the console shows `0` or nothing, the flag never
+reached the code.
+
+### Semantic labels
+
+Placed objects need a `userData.semantic` that exists in
+`public/palette.json`. `SemanticView.render()` throws
+`Unknown semantic <label>` for anything else, and adding a palette entry alone
+does not help — the H3 model has never seen a class that wasn't in its training
+vocabulary.
+
+| Objects | Label | Palette RGB |
+| --- | --- | --- |
+| Cones | `barrier` | `250,170,30` — shared with the guard rail |
+| Buildings | `building` | `70,70,70` |
+
+Cones share `barrier` with the armco rail deliberately, to stay in
+distribution. The cost is that they are the same color in the semantic export
+and distinguishable only by shape, so a render prompt that does not describe
+the difference will tend to fuse the cone run into a continuous fence.
+
+### Flags that do not work
+
+`src/world.js` reads `?roadHalfWidth=` and `?startFraction=`, and also contains
+its own `?cones=1` branch. **None of it ever runs.** `main.js` imports
+`makeWorld` from `./native-world.js`; nothing imports `world.js`.
+
+Vite will happily serve `world.js` and `curl .../src/world.js | grep` will show
+your edits in it, which makes this failure very convincing. Before debugging
+"code is served but does not execute", check what `main.js` actually imports:
+
+```sh
+grep -n "makeWorld" src/*.js
+```
+
+Put world/track geometry changes in `native-world.js`.
+
 The original assets come from https://github.com/jzbontar/torcs:
 `data/tracks/road/e-track-3` and `data/cars/models/car1-stock1`. Models are
 converted to JSON, and SGI RGB textures are converted to PNG. The track

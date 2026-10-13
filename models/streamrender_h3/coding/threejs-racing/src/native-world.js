@@ -47,10 +47,10 @@ export async function makeWorld(scene){
  console.warn('[buildings] count',buildingCount);
  if(buildingCount>0){
   Array.from({length:buildingCount},(_,i)=>i).forEach(i=>{
-   const t=((startDistance+40+i*35)%length)/length,base=curve.getPointAt(t),tangent=curve.getTangentAt(t);
+   const t=((startDistance+40+i*14)%length)/length,base=curve.getPointAt(t),tangent=curve.getTangentAt(t);
    const normal=new T.Vector3(-tangent.z,0,tangent.x).normalize();
    // Offset well past roadHalfWidth (6) and the verge so nothing sits on track.
-   const side=i%2?1:-1,offset=22+(i%3)*7,w=8+(i%4)*3,d=7+(i%3)*4,h=6+(i%5)*4;
+   const side=i%2?1:-1,offset=20+(i%3)*5,w=10+(i%4)*4,d=9+(i%3)*5,h=14+(i%5)*8;
    const pos=base.clone().addScaledVector(normal,side*offset);
    // heightAt only raycasts road meshes; off-road it falls back to the nearest
    // centerline height, which is level enough alongside this circuit.
