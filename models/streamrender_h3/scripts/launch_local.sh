@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 runtime_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# Local Node (setup_env.sh installs one under .tools/node -- no sudo/apt,
+# common on shared DGX hosts with no root access) must be on PATH before the
+# npm call below, or it fails with "npm: command not found".
+if [ -x "$runtime_root/.tools/node/bin/node" ]; then
+  export PATH="$runtime_root/.tools/node/bin:$PATH"
+fi
 export PYTHONPATH="$runtime_root:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 export FLASH_ATTN_4_AVAILABLE=${FLASH_ATTN_4_AVAILABLE:-1}
@@ -15,7 +21,7 @@ backend=${BACKEND:-h3}
 if [[ $backend == passthrough ]]; then
   "$python_bin" -m runtime.worker --backend passthrough "$@" &
 else
-  "$python_bin" -m torch.distributed.run --standalone --nproc-per-node="${GPUS:-8}" -m runtime.worker "$@" &
+  "$python_bin" -m torch.distributed.run --standalone --nproc-per-node="${GPUS:-1}" -m runtime.worker "$@" &
 fi
 worker_pid=$!
 cleanup() { kill "$worker_pid" "${frontend_pid:-$worker_pid}" 2>/dev/null || true; }
