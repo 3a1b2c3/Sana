@@ -18,6 +18,14 @@ export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}
 export STREAMRENDER_SERVER=${STREAMRENDER_SERVER:-http://127.0.0.1:8765}
 python_bin=${PYTHON_BIN:-python3}
 backend=${BACKEND:-h3}
+# vite (started below) outlives the trap's cleanup() when the worker crashes
+# first -- `kill "$worker_pid"` fires but frontend_pid isn't set yet at that
+# point, so vite's child process keeps the port bound into the next run.
+# Clear it before starting rather than require a manual kill every retry.
+for port in 5191 8765; do
+  fuser -k -TERM "${port}/tcp" 2>/dev/null || true
+done
+sleep 1
 if [[ $backend == passthrough ]]; then
   "$python_bin" -m runtime.worker --backend passthrough "$@" &
 else
