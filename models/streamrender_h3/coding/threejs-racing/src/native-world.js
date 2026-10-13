@@ -36,5 +36,31 @@ export async function makeWorld(scene){
    scene.add(band);
   });
  }
+ // ?buildings=<N> lines the roadside with N blocks, alternating sides, opt-in
+ // and off by default. Labeled 'building' -- already in public/palette.json and
+ // in the H3 model's trained vocabulary, so unlike the cones (which borrow
+ // 'barrier' and are therefore indistinguishable from the guard rail) these get
+ // their own distinct label color in the semantic export.
+ // Sizes and offsets vary by index rather than randomly, so repeated exports of
+ // the same URL produce byte-identical semantic frames.
+ const buildingCount=Number(new URLSearchParams(location.search).get("buildings")||0);
+ console.warn('[buildings] count',buildingCount);
+ if(buildingCount>0){
+  Array.from({length:buildingCount},(_,i)=>i).forEach(i=>{
+   const t=((startDistance+40+i*35)%length)/length,base=curve.getPointAt(t),tangent=curve.getTangentAt(t);
+   const normal=new T.Vector3(-tangent.z,0,tangent.x).normalize();
+   // Offset well past roadHalfWidth (6) and the verge so nothing sits on track.
+   const side=i%2?1:-1,offset=22+(i%3)*7,w=8+(i%4)*3,d=7+(i%3)*4,h=6+(i%5)*4;
+   const pos=base.clone().addScaledVector(normal,side*offset);
+   // heightAt only raycasts road meshes; off-road it falls back to the nearest
+   // centerline height, which is level enough alongside this circuit.
+   pos.y=heightAt(pos.x,pos.z);
+   const mesh=new T.Mesh(new T.BoxGeometry(w,h,d),new T.MeshStandardMaterial({color:0x9a9389,roughness:.92}));
+   mesh.position.set(pos.x,pos.y+h/2,pos.z);
+   mesh.rotation.y=Math.atan2(-tangent.x,-tangent.z);
+   mesh.userData.semantic='building';mesh.castShadow=true;mesh.receiveShadow=true;
+   scene.add(mesh);
+  });
+ }
  return{roadHalfWidth:6,curve,length,samples,nearest,updateTrees:()=>{},heightAt,bounds:{radius:2000},startDistance,spawn:{x:start.x,z:start.z,heading:Math.atan2(-direction.x,-direction.z)}};
 }
