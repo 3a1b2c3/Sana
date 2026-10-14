@@ -9,9 +9,15 @@ export async function makeWorld(scene){
  const roads=track.children.filter(m=>m.userData.semantic==='road'),ray=new T.Raycaster();track.updateMatrixWorld(true);
  function heightAt(x,z){ray.set(new T.Vector3(x,150,z),new T.Vector3(0,-1,0));const hit=ray.intersectObjects(roads,false)[0];if(hit)return hit.point.y+.08;const n=nearest(new T.Vector3(x,0,z));return n.point.y+.08;}
  const approx=new T.Vector3(1089.463,35.262,-574.777),near=nearest(approx),startFraction=near.index/800,startDistance=startFraction*length,start=curve.getPointAt(startFraction),direction=curve.getTangentAt(startFraction);
- // A traffic cone just ahead of the spawn point, opt-in via ?cones=1. Labeled
- // 'barrier' (not a new semantic class) so it stays in the H3 model's known
- // segmentation vocabulary -- orange in the palette either way.
+ // Traffic cones, opt-in via ?cones=<N>. Labeled 'rock', not 'barrier'.
+ // The 13 semantic classes are fixed and shared between training and
+ // deployment, so a new cone class is not an option. 'barrier' was the
+ // obvious reuse but it is the guard rail's own class -- one orange
+ // population the model renders as one continuous rail, which is why cone
+ // runs kept fusing into a fence no matter how the prompt described them.
+ // 'rock' is unused by this scene and its prior is discrete ground-level
+ // objects, so the cones are structurally separate. Their orange appearance
+ // comes from the prompt and reference image, not the label color.
  // ?cones=<N> places N cones down the middle of the road, spaced out, starting
  // well down the road from spawn; omitted or 0 means none.
  const coneCount=Number(new URLSearchParams(location.search).get("cones")||0);
@@ -26,13 +32,13 @@ export async function makeWorld(scene){
    base.y=heightAt(base.x,base.z);
    const plateHeight=.05;
    const plate=new T.Mesh(new T.BoxGeometry(.4,plateHeight,.4),new T.MeshStandardMaterial({color:0xff6a13,roughness:.86}));
-   plate.position.set(base.x,base.y+plateHeight/2,base.z);plate.userData.semantic='barrier';plate.castShadow=true;plate.receiveShadow=true;
+   plate.position.set(base.x,base.y+plateHeight/2,base.z);plate.userData.semantic='rock';plate.castShadow=true;plate.receiveShadow=true;
    scene.add(plate);
    const cone=new T.Mesh(new T.ConeGeometry(.25,bodyHeight,12),new T.MeshStandardMaterial({color:0xff6a13,roughness:.86}));
-   cone.position.set(base.x,base.y+plateHeight+bodyHeight/2,base.z);cone.userData.semantic='barrier';cone.castShadow=true;cone.receiveShadow=true;
+   cone.position.set(base.x,base.y+plateHeight+bodyHeight/2,base.z);cone.userData.semantic='rock';cone.castShadow=true;cone.receiveShadow=true;
    scene.add(cone);
    const band=new T.Mesh(new T.CylinderGeometry(.12,.135,.05,12),new T.MeshStandardMaterial({color:0xf2f2f2,roughness:.86}));
-   band.position.set(base.x,base.y+plateHeight+bodyHeight*.62,base.z);band.userData.semantic='barrier';band.receiveShadow=true;
+   band.position.set(base.x,base.y+plateHeight+bodyHeight*.62,base.z);band.userData.semantic='rock';band.receiveShadow=true;
    scene.add(band);
   });
  }
