@@ -38,6 +38,15 @@ def run_h3(settings, assets, bridge):
     models = build_models(cfg.models)
     if len(models["backbone"].dit.blocks) != 50:
         raise RuntimeError("The H3 backbone must execute all 50 layers")
+    quant_mode = os.environ.get("STREAMRENDER_COMPUTE_QUANT", "none").lower()
+    if quant_mode not in ("none", "mxfp8"):
+        raise ValueError(f"STREAMRENDER_COMPUTE_QUANT must be none or mxfp8, got {quant_mode!r}")
+    if quant_mode == "mxfp8":
+        from render import compute_quant
+        report = compute_quant.install(models["backbone"].dit, *compute_quant.block_range())
+        print(f"STREAMRENDER_MXFP8 blocks={report.first_block}-{report.last_block} "
+              f"linears={report.quantized_linears} "
+              f"{report.original_bytes / 2**30:.2f} GiB -> {report.quantized_bytes / 2**30:.2f} GiB", flush=True)
     pipe = StreamingPipeline(cfg, models, settings)
     outputs = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rgb-publication")
 
