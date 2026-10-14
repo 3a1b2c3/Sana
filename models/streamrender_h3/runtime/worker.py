@@ -5,12 +5,36 @@ import json
 import logging
 import os
 import queue
+import statistics
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from .config import ROOT, load_config, mount_vendor
 from .server import Bridge, serve
+
+SUMMARY_KEYS = ("encode_ms", "render_ms", "decode_ms", "rgb_ready_wall_ms",
+                "publication_interval_ms", "oldest_input_to_rgb_ready_ms")
+
+
+def summarize(rows):
+    """Session totals plus medians over every chunk after the bootstrap round.
+
+    The first chunk has no publication interval and carries the bootstrap/compile cost,
+    so it counts toward the totals but not toward the average fps or the medians.
+    """
+    timed = [row for row in rows if row.get("publication_interval_ms")]
+    interval_ms = sum(row["publication_interval_ms"] for row in timed)
+    timed_frames = sum(row["output_frames"] for row in timed)
+    fps = [row["output_frames"] * 1000 / row["publication_interval_ms"] for row in timed]
+    summary = {"chunks": len(rows), "output_frames": sum(row["output_frames"] for row in rows),
+               "seconds": interval_ms / 1000,
+               "average_fps": timed_frames * 1000 / interval_ms if interval_ms else None,
+               "median_fps": statistics.median(fps) if fps else None}
+    for key in SUMMARY_KEYS:
+        values = [row[key] for row in rows[1:] if row.get(key) is not None]
+        summary["median_" + key] = statistics.median(values) if values else None
+    return summary
 
 
 def run_h3(settings, assets, bridge):
@@ -93,6 +117,7 @@ def run_h3(settings, assets, bridge):
             if rank == 0:
                 session.ready = True
             pending_output = None
+            session_rows = []
             while True:
                 count, frames = pipe.next_counts()
                 records = session.collect(frames, settings["session_idle_seconds"]) if rank == 0 else None
@@ -114,7 +139,8 @@ def run_h3(settings, assets, bridge):
                     metrics["reference_last_frame"] = records[-1][0]
                     metrics["oldest_input_to_rgb_ready_ms"] = (time.monotonic() - records[0][3]) * 1000
                     session.metrics = metrics
-                    output_dir = Path(settings.get("output_dir", str(ROOT / "outputs"))) / session.id
+                    session_rows.append(dict(metrics))
+                    output_dir =Path(settings.get("output_dir", str(ROOT / "outputs"))) / session.id
                     output_dir.mkdir(parents=True, exist_ok=True)
                     with (output_dir / "controls.jsonl").open("a") as transcript:
                         for frame_index, _, controls, _ in records:
@@ -130,6 +156,12 @@ def run_h3(settings, assets, bridge):
                         pending_output = outputs.submit(publish, session, rgb, metrics)
             if pending_output is not None:
                 pending_output.result()
+            if rank == 0 and session_rows:
+                summary = summarize(session_rows)
+                summary["session"] = session.id
+                summary_dir = Path(settings.get("output_dir", str(ROOT / "outputs"))) / session.id
+                (summary_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+                print("STREAMRENDER_SUMMARY", json.dumps(summary), flush=True)
             # Reset all encoder/decoder/KV state on the next start().
 
 

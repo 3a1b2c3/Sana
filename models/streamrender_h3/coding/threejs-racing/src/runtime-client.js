@@ -13,6 +13,66 @@ async function request(path, options) {
   return value;
 }
 
+const WINDOW = 10;
+const history = [];
+const total = {chunks: 0, frames: 0, timedFrames: 0, intervalMs: 0};
+let lastRound = -1;
+status.style.whiteSpace = 'pre-line';
+
+function resetStats() {
+  history.length = 0;
+  Object.assign(total, {chunks: 0, frames: 0, timedFrames: 0, intervalMs: 0});
+  lastRound = -1;
+}
+
+function ms(value) {
+  return value == null ? '-' : value.toFixed(0) + ' ms';
+}
+
+function fpsText(value) {
+  return value == null ? '- fps' : value.toFixed(1) + ' fps';
+}
+
+function median(values) {
+  const sorted = values.filter(value => value != null).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+// Sustained fps is output frames per publication interval; the first chunk has no interval yet,
+// so its frames are excluded from the timed total.
+function record(metrics) {
+  if (metrics.round === lastRound) return;
+  lastRound = metrics.round;
+  const interval = metrics.publication_interval_ms;
+  history.push({...metrics, fps: interval ? metrics.output_frames * 1000 / interval : null});
+  if (history.length > WINDOW) history.shift();
+  total.chunks += 1;
+  total.frames += metrics.output_frames;
+  if (interval) {
+    total.timedFrames += metrics.output_frames;
+    total.intervalMs += interval;
+  }
+}
+
+function line(label, pick) {
+  return label + ' · ' + fpsText(pick('fps')) + ' · RGB-ready ' + ms(pick('rgb_ready_wall_ms'))
+    + ' (encode ' + ms(pick('encode_ms')) + ', render ' + ms(pick('render_ms'))
+    + ', decode ' + ms(pick('decode_ms')) + ')'
+    + ' · interval ' + ms(pick('publication_interval_ms'))
+    + ' · input to video ' + ms(pick('oldest_input_to_rgb_ready_ms'));
+}
+
+function formatMetrics() {
+  const now = history[history.length - 1];
+  const average = total.intervalMs ? total.timedFrames * 1000 / total.intervalMs : null;
+  return line('Chunk ' + now.round + ' (' + now.output_frames + ' frames)', key => now[key]) + '\n'
+    + line('Median of last ' + history.length, key => median(history.map(entry => entry[key]))) + '\n'
+    + 'Total · ' + total.chunks + ' chunks · ' + total.frames + ' frames · average ' + fpsText(average)
+    + ' over ' + (total.intervalMs / 1000).toFixed(1) + ' s';
+}
+
 export async function startRuntime(config) {
   const health = await request('health');
   if (!health.ready) throw new Error(health.error || 'GPU worker loading / warming up');
@@ -33,16 +93,18 @@ export async function startRuntime(config) {
   }
   feedback.src = '/runtime/stream/' + session.id;
   feedback.style.display = 'block';
+  resetStats();
   clearInterval(timer);
   timer = setInterval(async () => {
     try {
       const value = await request('status/' + session.id);
       const metrics = value.metrics;
+      if (!value.error && metrics.backend !== 'passthrough' && metrics.rgb_ready_wall_ms != null) record(metrics);
       status.textContent = value.error || (metrics.backend === 'passthrough'
         ? 'Transport diagnostic · chunk ' + metrics.round
         : metrics.rgb_ready_wall_ms == null
         ? 'Waiting for first reference chunk'
-        : 'RGB-ready render ' + metrics.rgb_ready_wall_ms.toFixed(1) + ' ms · chunk ' + metrics.round);
+        : formatMetrics());
       if (value.closed) clearInterval(timer);
     } catch (error) {
       status.textContent = error.message;
