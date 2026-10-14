@@ -20,6 +20,9 @@ export async function makeWorld(scene){
  // comes from the prompt and reference image, not the label color.
  // ?cones=<N> places N cones down the middle of the road, spaced out, starting
  // well down the road from spawn; omitted or 0 means none.
+ // Note: at 25 m downrange and 2 m spacing the whole run occupies only
+ // frames 0-34, which is inside the renderer's warmup trough -- renders of
+ // the cones in that window are not a fair test of how they look.
  const coneCount=Number(new URLSearchParams(location.search).get("cones")||0);
  console.warn('[cones] count',coneCount);
  if(coneCount>0){
