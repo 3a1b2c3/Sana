@@ -112,7 +112,30 @@ function step(dt){
 function render(){if(orbitControls)orbitControls.update();world.updateTrees(camera);sun.position.copy(player.object.position).add(new T.Vector3(-30,55,20));sun.target.position.copy(player.object.position);renderer.render(scene,camera);semantic.render();document.querySelector('#speed').textContent=`${Math.abs(player.speed*3.6).toFixed(0)} km/h · ${lap} 圈`;}
 async function api(path,body,headers={}){const r=await fetch('/api/'+path,{method:'POST',body,headers});if(!r.ok)throw Error(await r.text());return r.json();}
 async function startSession(kind,frames){const config={kind,frames,width:W,height:H,fps:FPS,palette,autopilot:auto,autopilotPolicy:{...autopilotPolicy,opponentGaps:[...autopilotPolicy.opponentGaps]}};if(kind==='live'){return (await import('./runtime-client.js')).startRuntime(config);}return api('session',JSON.stringify(config),{'Content-Type':'application/json'});}
-async function sendFrame(index){const blob=await semantic.png();const controls={...lastControls,frame:index,timestamp:index/FPS};if(session.runtime){return (await import('./runtime-client.js')).sendRuntimeFrame(session,index,blob,controls);}return api(`frame/${session.id}/${index}`,blob,{'Content-Type':'image/png','X-Controls':JSON.stringify(controls)});}
+// Frames are uploaded strictly serially -- the live loop awaits each sendFrame
+// before producing the next -- so a chunk's publication interval is
+// frames x (PNG encode + round trip), not the renderer's compute time. When the
+// UI is reached through an SSH tunnel the round trip dominates and the renderer
+// starves: measured 4245 ms interval against 972 ms of actual compute.
+// This splits the two halves so the culprit is visible; averages print to the
+// console every 24 frames and are readable live via window.racing.sendStats().
+const sendStats={encodeMs:0,uploadMs:0,bytes:0,n:0};
+async function sendFrame(index){
+ const t0=performance.now();
+ const blob=await semantic.png();
+ const t1=performance.now();
+ const controls={...lastControls,frame:index,timestamp:index/FPS};
+ const result=session.runtime
+  ?await (await import('./runtime-client.js')).sendRuntimeFrame(session,index,blob,controls)
+  :await api(`frame/${session.id}/${index}`,blob,{'Content-Type':'image/png','X-Controls':JSON.stringify(controls)});
+ const t2=performance.now();
+ sendStats.encodeMs+=t1-t0;sendStats.uploadMs+=t2-t1;sendStats.bytes+=blob.size;sendStats.n++;
+ if(sendStats.n%24===0){
+  const n=sendStats.n;
+  console.warn(`[send] ${n} frames · encode ${(sendStats.encodeMs/n).toFixed(0)}ms · upload ${(sendStats.uploadMs/n).toFixed(0)}ms · ${(sendStats.bytes/n/1024).toFixed(0)}KB/frame · ${((sendStats.encodeMs+sendStats.uploadMs)/n).toFixed(0)}ms per frame total`);
+ }
+ return result;
+}
 async function reference(){const blob=await new Promise(r=>renderer.domElement.toBlob(r,'image/png'));await api(`reference/${session.id}`,blob,{'Content-Type':'image/png'});}
 async function record(frames=719){if(busy||live)throw Error('已有录制或语义流正在运行');busy=true;document.querySelector('#record').disabled=true;try{
   reset();session=await startSession('record',frames);render();await reference();
@@ -127,4 +150,4 @@ document.querySelector('#record').onclick=()=>record().catch(e=>status.textConte
 let last=performance.now(),acc=0;async function loop(now){const dt=Math.min((now-last)/1000,.1);last=now;
  try{if(!busy){if(live){if(liveIndex>0)for(let j=0;j<2;j++)step(1/(FPS*2));render();livePending=sendFrame(liveIndex);await livePending;liveIndex++;await new Promise(r=>setTimeout(r,Math.max(0,1000/FPS-(performance.now()-now))));}else{acc+=dt;while(acc>=1/120){step(1/120);acc-=1/120;}render();}}}catch(e){live=false;status.textContent=e.message;try{await (await import('./runtime-client.js')).closeRuntime(session?.id);}catch{}}requestAnimationFrame(loop);}
 reset();requestAnimationFrame(loop);
-window.racing={replayFrame(index){if(index===0){busy=true;auto=true;reset();}else{for(let j=0;j<2;j++)step(1/(FPS*2));render();}return lastControls;},rgbCanvas:renderer.domElement,player,world,scene,camera,semantic,palette,record,reset,step,render,setAuto:v=>{if(auto!==v)toggleAuto();},setAutopilotPolicy,state:()=>({time,auto,busy,live,autopilotPolicy:{...autopilotPolicy},position:player.object.position.toArray(),speed:player.speed}),controls:keys};
+window.racing={sendStats:()=>{const n=sendStats.n||1;return{frames:sendStats.n,encodeMs:+(sendStats.encodeMs/n).toFixed(1),uploadMs:+(sendStats.uploadMs/n).toFixed(1),kbPerFrame:+(sendStats.bytes/n/1024).toFixed(1),msPerFrame:+((sendStats.encodeMs+sendStats.uploadMs)/n).toFixed(1)};},replayFrame(index){if(index===0){busy=true;auto=true;reset();}else{for(let j=0;j<2;j++)step(1/(FPS*2));render();}return lastControls;},rgbCanvas:renderer.domElement,player,world,scene,camera,semantic,palette,record,reset,step,render,setAuto:v=>{if(auto!==v)toggleAuto();},setAutopilotPolicy,state:()=>({time,auto,busy,live,autopilotPolicy:{...autopilotPolicy},position:player.object.position.toArray(),speed:player.speed}),controls:keys};

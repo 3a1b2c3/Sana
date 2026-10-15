@@ -1,11 +1,14 @@
-"""Blackwell MXFP8 block-scaled linear for the H3 DiT.
+"""Blackwell MXFP8 block-scaled linear for the H3 DiT, plus fused MXFP8 producers.
 
 Weights and activations use E4M3 values with one E8M0 scale per 32 values along K
 in cuBLASLt's ``SWIZZLE_32_4_4`` layout. Subset of the Sol-H3 implementation
 (models/minimax_h3/Sol-H3/h3_runtime/mxfp8.py), which follows the Apache-2.0
 MiniMax-H3 swizzle/exponent selection at yujincheng08/minimax-h3-deploy@bae3c859.
-Only the weight and activation quantize path is carried over; the fused
-RMSNorm/SwiGLU producers are not used by this runtime.
+
+The producers fuse an elementwise chain of the DiT block with the activation quantize, so the
+BF16 intermediate is never written: RMSNorm + modulation, residual + gate + RMSNorm + modulation,
+and SwiGLU. The SwiGLU producer differs from Sol-H3's: this model computes ``silu(first half) *
+second half`` (see ``_silu_mul`` in the vendored model), Sol-H3's diffusers layout is the reverse.
 """
 import torch
 import triton
@@ -35,6 +38,36 @@ def _mx_scale_offsets(row, column, column_blocks):
         + (row % 32) * 16
         + ((row % 128) // 32) * 4
         + (column % 4)
+    )
+
+
+@triton.jit
+def _store_mx_row(
+    quantized_ptr,
+    scale_ptr,
+    value,
+    row,
+    columns,
+    mask,
+    num_columns,
+    num_groups,
+    column_blocks,
+    BLOCK: tl.constexpr,
+):
+    values = tl.reshape(value, [BLOCK // 32, 32])
+    amax = tl.max(tl.abs(values), axis=1)
+    scale_byte, inverse = _mx_e8m0_from_amax(amax)
+    quantized = tl.reshape(values * inverse[:, None], [BLOCK])
+    tl.store(
+        quantized_ptr + row.to(tl.int64) * num_columns + columns,
+        quantized.to(tl.float8e4nv),
+        mask=mask,
+    )
+    group = tl.arange(0, BLOCK // 32)
+    tl.store(
+        scale_ptr + _mx_scale_offsets(row, group, column_blocks),
+        scale_byte.to(tl.uint8),
+        mask=group < num_groups,
     )
 
 
@@ -82,9 +115,199 @@ def _mxfp8_quant_kernel(
     )
 
 
+@triton.jit
+def _rmsnorm_modulate_mxfp8_kernel(
+    quantized_ptr,
+    output_scale_ptr,
+    input_ptr,
+    weight_ptr,
+    scale_ptr,
+    shift_ptr,
+    index_ptr,
+    num_columns,
+    num_indices,
+    num_groups,
+    column_blocks,
+    eps,
+    row_stride,
+    table_row_stride,
+    BLOCK: tl.constexpr,
+):
+    row = tl.program_id(0)
+    columns = tl.arange(0, BLOCK)
+    mask = columns < num_columns
+    offset = row.to(tl.int64) * row_stride + columns
+    table_offset = tl.load(index_ptr + (row % num_indices)) * table_row_stride + columns
+
+    value = tl.load(input_ptr + offset, mask=mask, other=0.0).to(tl.float32)
+    variance = tl.sum(value * value, axis=0) / num_columns
+    normed = value * tl.math.rsqrt(variance + eps)
+    weight = tl.load(weight_ptr + columns, mask=mask, other=0.0).to(tl.float32)
+    normed = normed * weight
+
+    scale = tl.load(scale_ptr + table_offset, mask=mask, other=0.0).to(tl.float32)
+    shift = tl.load(shift_ptr + table_offset, mask=mask, other=0.0).to(tl.float32)
+    output = (normed * (1.0 + scale) + shift).to(tl.bfloat16).to(tl.float32)
+    _store_mx_row(
+        quantized_ptr,
+        output_scale_ptr,
+        output,
+        row,
+        columns,
+        mask,
+        num_columns,
+        num_groups,
+        column_blocks,
+        BLOCK,
+    )
+
+
+@triton.jit
+def _residual_gate_rmsnorm_modulate_mxfp8_kernel(
+    hidden_output_ptr,
+    quantized_ptr,
+    output_scale_ptr,
+    residual_ptr,
+    branch_ptr,
+    weight_ptr,
+    gate_ptr,
+    scale_ptr,
+    shift_ptr,
+    index_ptr,
+    num_columns,
+    num_indices,
+    num_groups,
+    column_blocks,
+    eps,
+    row_stride,
+    table_row_stride,
+    BLOCK: tl.constexpr,
+):
+    row = tl.program_id(0)
+    columns = tl.arange(0, BLOCK)
+    mask = columns < num_columns
+    offset = row.to(tl.int64) * row_stride + columns
+    table_row = tl.load(index_ptr + (row % num_indices))
+    table_offset = table_row * table_row_stride + columns
+
+    residual = tl.load(residual_ptr + offset, mask=mask, other=0.0).to(tl.float32)
+    branch = tl.load(branch_ptr + offset, mask=mask, other=0.0).to(tl.float32)
+    gate = tl.load(gate_ptr + table_offset, mask=mask, other=0.0).to(tl.float32)
+
+    hidden = residual + gate * branch
+    tl.store(
+        hidden_output_ptr + offset,
+        hidden.to(hidden_output_ptr.dtype.element_ty),
+        mask=mask,
+    )
+
+    variance = tl.sum(hidden * hidden, axis=0) / num_columns
+    normed = hidden * tl.math.rsqrt(variance + eps)
+    weight = tl.load(weight_ptr + columns, mask=mask, other=0.0).to(tl.float32)
+    normed = normed * weight
+
+    scale = tl.load(scale_ptr + table_offset, mask=mask, other=0.0).to(tl.float32)
+    shift = tl.load(shift_ptr + table_offset, mask=mask, other=0.0).to(tl.float32)
+    output = (normed * (1.0 + scale) + shift).to(tl.bfloat16).to(tl.float32)
+    _store_mx_row(
+        quantized_ptr,
+        output_scale_ptr,
+        output,
+        row,
+        columns,
+        mask,
+        num_columns,
+        num_groups,
+        column_blocks,
+        BLOCK,
+    )
+
+
+@triton.jit
+def _silu_mul_mxfp8_kernel(
+    quantized_ptr,
+    output_scale_ptr,
+    input_ptr,
+    num_columns,
+    num_groups,
+    column_blocks,
+    input_row_stride,
+    BLOCK: tl.constexpr,
+):
+    row = tl.program_id(0)
+    columns = tl.arange(0, BLOCK)
+    mask = columns < num_columns
+    base = input_ptr + row.to(tl.int64) * input_row_stride
+    gate = tl.load(base + columns, mask=mask, other=0.0).to(tl.float32)
+    up = tl.load(base + num_columns + columns, mask=mask, other=0.0).to(tl.float32)
+    output = ((gate * tl.sigmoid(gate)) * up).to(tl.bfloat16).to(tl.float32)
+    _store_mx_row(
+        quantized_ptr,
+        output_scale_ptr,
+        output,
+        row,
+        columns,
+        mask,
+        num_columns,
+        num_groups,
+        column_blocks,
+        BLOCK,
+    )
+
+
+class MXActivation:
+    """Prequantized activation accepted by :class:`MXFP8Linear`.
+
+    Carries ``shape``, ``dtype`` and ``device`` so code that only reads the row count of its
+    input (the causal attention does) can take it in place of the BF16 tensor.
+    """
+
+    __slots__ = ("q", "s", "shape", "dtype", "device")
+
+    def __init__(self, quantized, scale, shape, dtype=torch.bfloat16):
+        self.q = quantized
+        self.s = scale
+        self.shape = tuple(shape)
+        self.dtype = dtype
+        self.device = quantized.device
+
+    def dequantize(self):
+        return mxfp8_dequantize_swizzled(self.q, self.s).to(self.dtype).view(self.shape)
+
+
 def _scale_numel(rows, k):
     num_groups = k // 32
     return -(-rows // 128) * 128 * (-(-num_groups // 4) * 4)
+
+
+def _allocate(rows, k, device):
+    quantized = torch.empty(rows, k, dtype=_E4M3, device=device)
+    scale = torch.zeros(_scale_numel(rows, k), dtype=torch.uint8, device=device)
+    return quantized, scale
+
+
+def _check_k(k):
+    if k % 32 != 0:
+        raise ValueError(f"MXFP8 requires K % 32 == 0, got K={k}")
+
+
+def _next_power_of_two(value):
+    return 1 << (value - 1).bit_length()
+
+
+def _warps_for(block):
+    if block >= 8192:
+        return 16
+    if block >= 2048:
+        return 8
+    return 4
+
+
+def _tables(*tables):
+    """Row-addressable tables sharing one row stride, as the producer kernels index them with one."""
+    if all(t.stride(-1) == 1 for t in tables) and len({t.stride(0) for t in tables}) == 1:
+        return tables
+    return tuple(t.contiguous() for t in tables)
 
 
 def mxfp8_quantize_swizzled(input_):
@@ -92,10 +315,8 @@ def mxfp8_quantize_swizzled(input_):
     if input_.ndim != 2 or input_.stride(-1) != 1 or input_.dtype != torch.bfloat16:
         raise ValueError("expected a row-major BF16 [rows, K] tensor")
     rows, k = input_.shape
-    if k % 32 != 0:
-        raise ValueError(f"MXFP8 requires K % 32 == 0, got K={k}")
-    quantized = torch.empty(rows, k, dtype=_E4M3, device=input_.device)
-    scale = torch.zeros(_scale_numel(rows, k), dtype=torch.uint8, device=input_.device)
+    _check_k(k)
+    quantized, scale = _allocate(rows, k, input_.device)
     if rows == 0:
         return quantized, scale
     num_groups = k // 32
@@ -106,6 +327,72 @@ def mxfp8_quantize_swizzled(input_):
         input_, quantized, scale, rows, k, num_groups, column_blocks,
         input_.stride(0), BLOCK_ROWS=block_rows, GROUPS=groups, num_warps=4)
     return quantized, scale
+
+
+def mxfp8_dequantize_swizzled(quantized, scale):
+    """Slow FP32 inverse used by validation tests."""
+    rows, k = quantized.shape
+    num_groups = k // 32
+    column_blocks = -(-num_groups // 4)
+    row = torch.arange(rows, device=quantized.device)[:, None]
+    column = torch.arange(num_groups, device=quantized.device)[None, :]
+    tile = (row // 128) * column_blocks + (column // 4)
+    offsets = tile * 512 + (row % 32) * 16 + ((row % 128) // 32) * 4 + (column % 4)
+    exponent = scale[offsets].to(torch.int32) - 127
+    factors = torch.ldexp(torch.ones((), device=quantized.device), exponent)
+    values = quantized.to(torch.float32).view(rows, num_groups, 32)
+    return (values * factors[:, :, None].to(torch.float32)).view(rows, k)
+
+
+def fused_rmsnorm_modulate_mxfp8(input_, weight, scale, shift, index, eps):
+    """RMSNorm then ``x * (1 + scale[index]) + shift[index]``, emitted as MXFP8."""
+    columns = input_.shape[-1]
+    _check_k(columns)
+    flat = input_.reshape(-1, columns).contiguous()
+    rows = flat.shape[0]
+    scale, shift = _tables(scale, shift)
+    quantized, output_scale = _allocate(rows, columns, input_.device)
+    num_groups = columns // 32
+    block = _next_power_of_two(columns)
+    _rmsnorm_modulate_mxfp8_kernel[(rows,)](
+        quantized, output_scale, flat, weight, scale, shift, index,
+        columns, index.numel(), num_groups, -(-num_groups // 4), eps,
+        flat.stride(0), scale.stride(0), BLOCK=block, num_warps=_warps_for(block))
+    return MXActivation(quantized, output_scale, input_.shape, input_.dtype)
+
+
+def fused_residual_gate_rmsnorm_modulate_mxfp8(residual, branch, gate, weight, scale, shift, index, eps):
+    """``hidden = residual + gate[index] * branch`` (BF16), plus its RMSNorm+modulation as MXFP8."""
+    columns = residual.shape[-1]
+    _check_k(columns)
+    residual_flat = residual.reshape(-1, columns).contiguous()
+    branch_flat = branch.reshape(-1, columns).contiguous()
+    rows = residual_flat.shape[0]
+    gate, scale, shift = _tables(gate, scale, shift)
+    hidden = torch.empty_like(residual_flat)
+    quantized, output_scale = _allocate(rows, columns, residual.device)
+    num_groups = columns // 32
+    block = _next_power_of_two(columns)
+    _residual_gate_rmsnorm_modulate_mxfp8_kernel[(rows,)](
+        hidden, quantized, output_scale, residual_flat, branch_flat, weight, gate, scale, shift, index,
+        columns, index.numel(), num_groups, -(-num_groups // 4), eps,
+        residual_flat.stride(0), gate.stride(0), BLOCK=block, num_warps=_warps_for(block))
+    return hidden.view_as(residual), MXActivation(quantized, output_scale, residual.shape, residual.dtype)
+
+
+def fused_silu_mul_mxfp8(input_):
+    """``silu(first half) * second half`` of the last dim, emitted as MXFP8."""
+    columns = input_.shape[-1] // 2
+    _check_k(columns)
+    flat = input_.reshape(-1, input_.shape[-1]).contiguous()
+    rows = flat.shape[0]
+    quantized, output_scale = _allocate(rows, columns, input_.device)
+    num_groups = columns // 32
+    block = _next_power_of_two(columns)
+    _silu_mul_mxfp8_kernel[(rows,)](
+        quantized, output_scale, flat, columns, num_groups, -(-num_groups // 4),
+        flat.stride(0), BLOCK=block, num_warps=_warps_for(block))
+    return MXActivation(quantized, output_scale, (*input_.shape[:-1], columns), input_.dtype)
 
 
 class MXFP8Linear(torch.nn.Module):
@@ -130,9 +417,12 @@ class MXFP8Linear(torch.nn.Module):
         return self.weight.nbytes + self.weight_scale.nbytes
 
     def forward(self, input_):
-        leading_shape = input_.shape[:-1]
-        flat = input_.reshape(-1, input_.shape[-1]).contiguous()
-        activation, scale = mxfp8_quantize_swizzled(flat)
+        if isinstance(input_, MXActivation):
+            activation, scale, leading_shape = input_.q, input_.s, input_.shape[:-1]
+        else:
+            leading_shape = input_.shape[:-1]
+            flat = input_.reshape(-1, input_.shape[-1]).contiguous()
+            activation, scale = mxfp8_quantize_swizzled(flat)
         output = scaled_mm(
             activation,
             self.weight.t(),

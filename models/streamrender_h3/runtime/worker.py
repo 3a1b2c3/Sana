@@ -65,12 +65,18 @@ def run_h3(settings, assets, bridge):
     quant_mode = os.environ.get("STREAMRENDER_COMPUTE_QUANT", "none").lower()
     if quant_mode not in ("none", "mxfp8"):
         raise ValueError(f"STREAMRENDER_COMPUTE_QUANT must be none or mxfp8, got {quant_mode!r}")
+    fused = False
     if quant_mode == "mxfp8":
         from render import compute_quant
+        fused = compute_quant.fused_enabled(quant_mode)
         report = compute_quant.install(models["backbone"].dit, *compute_quant.block_range())
+        if fused:
+            compute_quant.install_fused_producers(models["backbone"].dit, *compute_quant.block_range())
         print(f"STREAMRENDER_MXFP8 blocks={report.first_block}-{report.last_block} "
-              f"linears={report.quantized_linears} "
+              f"linears={report.quantized_linears} fused_producers={fused} "
               f"{report.original_bytes / 2**30:.2f} GiB -> {report.quantized_bytes / 2**30:.2f} GiB", flush=True)
+    elif os.environ.get("STREAMRENDER_MXFP8_FUSED", "0") != "0":
+        raise ValueError("STREAMRENDER_MXFP8_FUSED requires STREAMRENDER_COMPUTE_QUANT=mxfp8")
     pipe = StreamingPipeline(cfg, models, settings)
     outputs = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rgb-publication")
 
@@ -138,6 +144,8 @@ def run_h3(settings, assets, bridge):
                     metrics["reference_first_frame"] = records[0][0]
                     metrics["reference_last_frame"] = records[-1][0]
                     metrics["oldest_input_to_rgb_ready_ms"] = (time.monotonic() - records[0][3]) * 1000
+                    interval_ms = metrics["publication_interval_ms"]
+                    metrics["output_fps"] = metrics["output_frames"] * 1000 / interval_ms if interval_ms else None
                     session.metrics = metrics
                     session_rows.append(dict(metrics))
                     output_dir =Path(settings.get("output_dir", str(ROOT / "outputs"))) / session.id
@@ -159,6 +167,8 @@ def run_h3(settings, assets, bridge):
             if rank == 0 and session_rows:
                 summary = summarize(session_rows)
                 summary["session"] = session.id
+                summary["compute_quant"] = quant_mode
+                summary["mxfp8_fused_producers"] = fused
                 summary_dir = Path(settings.get("output_dir", str(ROOT / "outputs"))) / session.id
                 (summary_dir / "summary.json").write_text(json.dumps(summary, indent=2))
                 print("STREAMRENDER_SUMMARY", json.dumps(summary), flush=True)

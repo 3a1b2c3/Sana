@@ -12,10 +12,16 @@ from dataclasses import dataclass
 
 import torch
 
-from .mxfp8 import MXFP8Linear
+from .mxfp8 import (
+    MXFP8Linear,
+    fused_residual_gate_rmsnorm_modulate_mxfp8,
+    fused_rmsnorm_modulate_mxfp8,
+    fused_silu_mul_mxfp8,
+)
 
 ENV_MODE = "STREAMRENDER_COMPUTE_QUANT"
 ENV_BLOCKS = "STREAMRENDER_QUANT_BLOCKS"
+ENV_FUSED = "STREAMRENDER_MXFP8_FUSED"
 DEFAULT_FIRST_BLOCK = 2
 DEFAULT_LAST_BLOCK = 46
 LINEARS = (("attn", "qkv_proj"), ("attn", "out_proj"), ("mlp", "fc1"), ("mlp", "fc2"))
@@ -40,6 +46,7 @@ class MXFP8Projection(torch.nn.Module):
         self.linear = MXFP8Linear(source.weight)
 
     def forward(self, x):
+        """``x`` is a BF16 tensor or an ``MXActivation`` already quantized by a fused producer."""
         return self.linear(x), None
 
 
@@ -57,6 +64,16 @@ def validate_platform():
         missing.append("torch.float8_e8m0fnu")
     if missing:
         raise RuntimeError("The installed PyTorch build lacks MXFP8 support: " + ", ".join(missing))
+
+
+def fused_enabled(mode):
+    """Whether the fused producers are requested; they only exist on top of the MXFP8 GEMMs."""
+    value = os.environ.get(ENV_FUSED, "0")
+    if value not in ("0", "1"):
+        raise ValueError(f"{ENV_FUSED} must be 0 or 1, got {value!r}")
+    if value == "1" and mode != "mxfp8":
+        raise ValueError(f"{ENV_FUSED}=1 requires {ENV_MODE}=mxfp8")
+    return value == "1"
 
 
 def block_range():
@@ -87,3 +104,46 @@ def install(dit, first_block=DEFAULT_FIRST_BLOCK, last_block=DEFAULT_LAST_BLOCK)
     gc.collect()
     torch.cuda.empty_cache()
     return ComputeQuantizationReport(first_block, last_block, linears, original_bytes, quantized_bytes)
+
+
+def _fused_block_forward(block):
+    """The causal block forward with each elementwise chain fused into the next GEMM's quantize.
+
+    Same sequence as ``CausalMiniMaxH3DiTBlock.forward``: norm1+modulate -> attention ->
+    gated residual -> norm2+modulate -> MLP -> gated residual. The producers keep the math in
+    FP32 and round once, where the eager chain rounds to BF16 after every op, so outputs differ
+    from the eager path by BF16 rounding, on top of the MXFP8 quantization itself.
+    """
+    def forward(x, *, adaln_input, combined_indices, rope_cache, adaln_params=None, **attn_kwargs):
+        if adaln_params is None:
+            adaln_params = block.adaln_proj(adaln_input)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = adaln_params
+        h = fused_rmsnorm_modulate_mxfp8(
+            x, block.norm1.weight, scale_msa, shift_msa, combined_indices, block.norm1.eps)
+        h = block.attn(h, rope_cache=rope_cache, **attn_kwargs)
+        x, h = fused_residual_gate_rmsnorm_modulate_mxfp8(
+            x, h, gate_msa, block.norm2.weight, scale_mlp, shift_mlp, combined_indices, block.norm2.eps)
+        up, _ = block.mlp.fc1(h)
+        h, _ = block.mlp.fc2(fused_silu_mul_mxfp8(up))
+        return (x + gate_mlp.index_select(0, combined_indices) * h).to(torch.bfloat16)
+    return forward
+
+
+def install_fused_producers(dit, first_block=DEFAULT_FIRST_BLOCK, last_block=DEFAULT_LAST_BLOCK):
+    """Patch blocks ``first_block..last_block`` to emit MXFP8 activations straight from the fused chains.
+
+    Call after ``install()`` with the same range; every patched block must already hold MXFP8
+    qkv_proj, fc1 and fc2, because the producers' output is only consumable by those GEMMs.
+    """
+    blocks = dit.blocks
+    if not 0 <= first_block <= last_block < len(blocks):
+        raise ValueError(f"Invalid fused block range [{first_block}, {last_block}] for {len(blocks)} blocks")
+    for index in range(first_block, last_block + 1):
+        block = blocks[index]
+        consumers = (block.attn.qkv_proj, block.mlp.fc1, block.mlp.fc2)
+        if not all(isinstance(layer, MXFP8Projection) for layer in consumers):
+            raise RuntimeError(f"Block {index} is not MXFP8-quantized; run install() over the same range first")
+        if getattr(block, "adaln_condition_head", None) is not None:
+            raise RuntimeError(f"Block {index} has an AdaLN condition head, which the fused forward does not apply")
+        block.forward = _fused_block_forward(block)
+    return last_block - first_block + 1
